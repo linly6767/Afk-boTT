@@ -1,113 +1,102 @@
+const bedrock = require('bedrock-protocol');
 const express = require('express');
-const mineflayer = require('mineflayer');
 
-// 1. Web Server สำหรับ Render
+// 1. Web Server สำหรับให้ Render และ UptimeRobot ยิงเช็กสถานะ
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-  res.send('Ultra-Realistic AFK Bot is Active!');
+  res.send('Ultra-Realistic Bedrock AFK Bot is Active!');
 });
 
 app.listen(PORT, () => {
   console.log(`[Web Server] Online on port ${PORT}`);
 });
 
-// 2. ฟังก์ชันหลักสร้างบอท
+let client = null;
+let reconnectTimeout = null;
+
+// 2. ฟังก์ชันสร้างบอทเชื่อมต่อ Bedrock
 function createBot() {
-  const bot = mineflayer.createBot({
-    host: process.env.SERVER_IP,
-    port: parseInt(process.env.SERVER_PORT) || 25565,
-    username: process.env.BOT_NAME || 'AFK_Bot_Pro',
+  console.log('[+] กำลังเชื่อมต่อไปยัง Bedrock Server...');
+
+  client = bedrock.createClient({
+    host: process.env.SERVER_IP || 'your-server.aternos.me',
+    port: parseInt(process.env.SERVER_PORT) || 19132, // พอร์ต Bedrock ปกติคือ 19132
+    username: process.env.BOT_NAME || 'AFK_Player_Pro',
+    offline: true // หากใช้ระบบ ID เถื่อน/Offline Mode บน Aternos
   });
 
-  let mainLoopTimeout;
-
-  // ฟังก์ชันหันหน้าแบบนุ่มนวล (Smooth Look) ลากเมาส์เหมือนคนจริง
-  async function smoothLook(targetYaw, targetPitch, steps = 15) {
-    if (!bot || !bot.entity) return;
-    const currentYaw = bot.entity.yaw;
-    const currentPitch = bot.entity.pitch;
-
-    for (let i = 1; i <= steps; i++) {
-      const yaw = currentYaw + (targetYaw - currentYaw) * (i / steps);
-      const pitch = currentPitch + (targetPitch - currentPitch) * (i / steps);
-      await bot.look(yaw, pitch, false);
-      await new Promise(r => setTimeout(r, 20)); // หน่วงเวลาเล็กน้อยให้หมุนนุ่มนวล
-    }
-  }
-
-  bot.on('spawn', () => {
-    console.log(`[+] บอท ${bot.username} เข้าเกมสำเร็จ (โหมดจำลองพฤติกรรมมนุษย์)`);
-    startHumanBehavior();
+  client.on('spawn', () => {
+    console.log(`[+] บอท ${client.username} เข้าสู่เกมสำเร็จ! เริ่มต้นจำลองพฤติกรรมคนเล่น...`);
+    startHumanBehavior(client);
   });
 
-  // 3. ระบบจำลองพฤติกรรมมนุษย์แบบผสมผสาน
-  function startHumanBehavior() {
-    async function loop() {
-      if (!bot || !bot.entity) return;
+  client.on('end', (reason) => {
+    console.log(`[-] บอทหลุดจากการเชื่อมต่อ: ${reason}`);
+    scheduleReconnect();
+  });
 
-      // สุ่มเลือกแอ็กชันแบบคนเล่นจริง
-      const rand = Math.random();
+  client.on('error', (err) => {
+    console.error(`[!] เกิดข้อผิดพลาด: ${err.message}`);
+  });
+}
 
-      try {
-        if (rand < 0.4) {
-          // 40% - กวาดสายตามองรอบๆ แบบนุ่มนวล + สลับช่องไอเท็ม
-          const newYaw = bot.entity.yaw + (Math.random() - 0.5) * 2;
-          const newPitch = (Math.random() - 0.5) * 0.8;
-          await smoothLook(newYaw, newPitch);
+// 3. ระบบจำลองพฤติกรรมมนุษย์แบบสุ่ม (Anti-AFK)
+function startHumanBehavior(botClient) {
+  let yaw = 0;
+  let pitch = 0;
 
-          // สุ่มเปลี่ยนช่อง Hotbar (0-8)
-          const randomSlot = Math.floor(Math.random() * 9);
-          bot.setQuickBarSlot(randomSlot);
+  function loop() {
+    if (!botClient) return;
 
-        } else if (rand < 0.7) {
-          // 30% - ย่อตัว หันมอง แล้วต่อยอากาศ 1 ที
-          bot.setControlState('sneak', true);
-          await smoothLook(bot.entity.yaw + 0.3, bot.entity.pitch);
-          bot.swing('arm');
-          await new Promise(r => setTimeout(r, 600 + Math.random() * 800));
-          bot.setControlState('sneak', false);
+    const rand = Math.random();
 
-        } else if (rand < 0.9) {
-          // 20% - เดินสั้นๆ พร้อมกระโดด 1 ครั้ง
-          const dir = ['forward', 'back', 'left', 'right'][Math.floor(Math.random() * 4)];
-          bot.setControlState(dir, true);
-          if (Math.random() > 0.5) bot.setControlState('jump', true);
+    // สุ่มเปลี่ยนองศาการมองแบบสุ่มนุ่มนวล
+    yaw += (Math.random() - 0.5) * 30;
+    pitch += (Math.random() - 0.5) * 15;
 
-          await new Promise(r => setTimeout(r, 300 + Math.random() * 500));
+    // จำกัดไม่ให้หันคอหักเกินธรรมชาติ (-80 ถึง 80 องศา)
+    if (pitch > 80) pitch = 80;
+    if (pitch < -80) pitch = -80;
 
-          bot.setControlState(dir, false);
-          bot.setControlState('jump', false);
-
-        } else {
-          // 10% - พักนิ่งๆ เหมือนคนพับจอไปทำอย่างอื่น (ไม่มีการขยับเลย)
-          await new Promise(r => setTimeout(r, 5000));
-        }
-      } catch (err) {
-        // ข้าม Error เล็กน้อยถ้าบอทกำลังโหลดฉาก
-      }
-
-      // สุ่มเวลารอระหว่าง 20 วินาที ถึง 2.5 นาที (จังหวะแบบมนุษย์จริง ไม่เป็นลูปซ้ำ)
-      const nextDelay = Math.floor(Math.random() * 130000) + 20000;
-      mainLoopTimeout = setTimeout(loop, nextDelay);
+    try {
+      // ส่งข้อมูล Input จำลองการขยับการมอง และสุ่มการย่อตัว/กระโดด
+      botClient.queue('player_auth_input', {
+        pitch: pitch,
+        yaw: yaw,
+        head_yaw: yaw,
+        position: { x: 0, y: 0, z: 0 },
+        move_vector: { x: (rand > 0.5 ? 0.05 : -0.05), z: (rand > 0.5 ? 0.05 : -0.05) },
+        input_data: {
+          ascend: false,
+          descend: false,
+          north_jump: rand > 0.85, // สุ่มกระโดดบางครั้ง
+          sneak: rand > 0.65,      // สุ่มย่อตัว
+          sprinting: false
+        },
+        input_mode: 'touch',
+        play_mode: 'normal',
+        interaction_model: 'touch'
+      });
+    } catch (e) {
+      // ข้ามกรณีเซิร์ฟเวอร์ยังไม่พร้อมรับแพ็กเก็ต
     }
 
-    loop();
+    // สุ่มเวลาทำแอคชันรอบถัดไป (สุ่มระหว่าง 15 วินาที ถึง 1.5 นาที เพื่อไม่ให้ระบบจับจังหวะได้)
+    const nextDelay = Math.floor(Math.random() * 75000) + 15000;
+    setTimeout(loop, nextDelay);
   }
 
-  // 4. ระบบ Reconnect สุ่มเวลาหน่วง
-  bot.on('end', (reason) => {
-    console.log(`[-] บอทหลุด: ${reason}`);
-    clearTimeout(mainLoopTimeout);
+  loop();
+}
 
-    // สุ่มรอ 1–3 นาที เพื่อไม่ให้ดูเป็นบอทตั้งโปรแกรม
-    const delay = Math.floor(Math.random() * 120000) + 60000;
-    console.log(`[!] จะลองเข้าใหม่ในอีก ${Math.round(delay / 1000)} วินาที...`);
-    setTimeout(createBot, delay);
-  });
-
-  bot.on('error', (err) => console.error(`[!] Error: ${err.message}`));
+// 4. ระบบ Reconnect สุ่มเวลา
+function scheduleReconnect() {
+  if (reconnectTimeout) clearTimeout(reconnectTimeout);
+  const delay = Math.floor(Math.random() * 60000) + 30000; // สุ่มรอ 30-90 วินาที
+  console.log(`[!] จะลองเชื่อมต่อใหม่อีกครั้งในอีก ${Math.round(delay / 1000)} วินาที...`);
+  reconnectTimeout = setTimeout(createBot, delay);
 }
 
 createBot();
