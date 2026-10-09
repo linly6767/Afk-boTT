@@ -1,102 +1,127 @@
 const bedrock = require('bedrock-protocol');
 const express = require('express');
 
-// 1. Web Server สำหรับให้ Render และ UptimeRobot ยิงเช็กสถานะ
+// 1. สร้าง Web Server รองรับ Render และ UptimeRobot
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-  res.send('Ultra-Realistic Bedrock AFK Bot is Active!');
+  res.send('Bedrock AFK Bot is running!');
 });
 
 app.listen(PORT, () => {
-  console.log(`[Web Server] Online on port ${PORT}`);
+  console.log(`[Web Server] Listening on port ${PORT}`);
 });
 
+// 2. ฟังก์ชันหลักสำหรับสร้าง บอท Bedrock
 let client = null;
-let reconnectTimeout = null;
+let afkInterval = null;
 
-// 2. ฟังก์ชันสร้างบอทเชื่อมต่อ Bedrock
 function createBot() {
-  console.log('[+] กำลังเชื่อมต่อไปยัง Bedrock Server...');
+  console.log('[+] Connecting to Bedrock Server...');
+
+  // ดึงค่าจาก Environment Variables หรือใช้ค่า Default
+  const host = process.env.SERVER_IP || 'your_aternos_ip.aternos.me';
+  const port = parseInt(process.env.SERVER_PORT) || 19132; // พอร์ต Bedrock ปกติคือ 19132
+  const username = process.env.BOT_NAME || 'AFK_Bot_Bedrock';
 
   client = bedrock.createClient({
-    host: process.env.SERVER_IP || 'your-server.aternos.me',
-    port: parseInt(process.env.SERVER_PORT) || 19132, // พอร์ต Bedrock ปกติคือ 19132
-    username: process.env.BOT_NAME || 'AFK_Player_Pro',
-    offline: true // หากใช้ระบบ ID เถื่อน/Offline Mode บน Aternos
+    host: host,
+    port: port,
+    username: username,
+    offline: true, // หากเซิร์ฟเวอร์เปิด Online Mode (Xbox) ให้เปลี่ยนเป็น false
+    skipPing: true
   });
 
+  // เมื่อบอทเกิดในโลกเรียบร้อยแล้ว (Spawned)
   client.on('spawn', () => {
-    console.log(`[+] บอท ${client.username} เข้าสู่เกมสำเร็จ! เริ่มต้นจำลองพฤติกรรมคนเล่น...`);
-    startHumanBehavior(client);
+    console.log(`[+] บอท ${username} เข้าเซิร์ฟเวอร์และเกิดเรียบร้อยแล้ว!`);
+
+    if (afkInterval) clearInterval(afkInterval);
+
+    // ทำงานสุ่มแอ็กชันป้องกันระบบ Anti-AFK ทุกๆ 15-30 วินาที
+    afkInterval = setInterval(() => {
+      if (!client) return;
+
+      try {
+        const rand = Math.random();
+
+        if (rand < 0.4) {
+          // 1. สุ่มหันหน้าไปทิศทางต่างๆ (Look around)
+          const randomYaw = Math.floor(Math.random() * 360) - 180;
+          const randomPitch = Math.floor(Math.random() * 180) - 90;
+
+          client.queue('player_auth_input', {
+            pitch: randomPitch,
+            yaw: randomYaw,
+            position: { x: 0, y: 0, z: 0 },
+            move_vector: { x: 0, z: 0 },
+            head_yaw: randomYaw,
+            input_data: 0n,
+            input_mode: 'mouse',
+            play_mode: 'normal',
+            interaction_model: 'touch',
+            tick: 0n,
+            delta: { x: 0, y: 0, z: 0 }
+          });
+          console.log('[AFK Action] หันมองทิศทางใหม่');
+
+        } else if (rand < 0.7) {
+          // 2. ต่อยอากาศ / แกว่งแขน (Swing Arm)
+          client.queue('animate', {
+            action_id: 'swing_arm',
+            runtime_entity_id: client.entityId || 1n
+          });
+          console.log('[AFK Action] แกว่งแขน/ต่อยอากาศ');
+
+        } else {
+          // 3. ย่อตัว (Sneak)
+          client.queue('player_action', {
+            runtime_entity_id: client.entityId || 1n,
+            action: 'start_sneak',
+            position: { x: 0, y: 0, z: 0 },
+            result_position: { x: 0, y: 0, z: 0 },
+            face: 0
+          });
+
+          setTimeout(() => {
+            if (client) {
+              client.queue('player_action', {
+                runtime_entity_id: client.entityId || 1n,
+                action: 'stop_sneak',
+                position: { x: 0, y: 0, z: 0 },
+                result_position: { x: 0, y: 0, z: 0 },
+                face: 0
+              });
+            }
+          }, 1200);
+          console.log('[AFK Action] ย่อตัวแล้วลุกขึ้น');
+        }
+      } catch (err) {
+        console.log('[!] AFK Action Error:', err.message);
+      }
+    }, 15000 + Math.random() * 15000);
   });
 
-  client.on('end', (reason) => {
-    console.log(`[-] บอทหลุดจากการเชื่อมต่อ: ${reason}`);
-    scheduleReconnect();
+  // จัดการเมื่อบอทโดนเตะ หรือหลุดเชื่อมต่อ
+  client.on('close', () => {
+    console.log('[-] บอทหลุดการเชื่อมต่อ กำลังลองใหม่ใน 20 วินาที...');
+    reconnect();
   });
 
   client.on('error', (err) => {
-    console.error(`[!] เกิดข้อผิดพลาด: ${err.message}`);
+    console.log('[!] เกิดข้อผิดพลาด:', err.message || err);
   });
 }
 
-// 3. ระบบจำลองพฤติกรรมมนุษย์แบบสุ่ม (Anti-AFK)
-function startHumanBehavior(botClient) {
-  let yaw = 0;
-  let pitch = 0;
-
-  function loop() {
-    if (!botClient) return;
-
-    const rand = Math.random();
-
-    // สุ่มเปลี่ยนองศาการมองแบบสุ่มนุ่มนวล
-    yaw += (Math.random() - 0.5) * 30;
-    pitch += (Math.random() - 0.5) * 15;
-
-    // จำกัดไม่ให้หันคอหักเกินธรรมชาติ (-80 ถึง 80 องศา)
-    if (pitch > 80) pitch = 80;
-    if (pitch < -80) pitch = -80;
-
-    try {
-      // ส่งข้อมูล Input จำลองการขยับการมอง และสุ่มการย่อตัว/กระโดด
-      botClient.queue('player_auth_input', {
-        pitch: pitch,
-        yaw: yaw,
-        head_yaw: yaw,
-        position: { x: 0, y: 0, z: 0 },
-        move_vector: { x: (rand > 0.5 ? 0.05 : -0.05), z: (rand > 0.5 ? 0.05 : -0.05) },
-        input_data: {
-          ascend: false,
-          descend: false,
-          north_jump: rand > 0.85, // สุ่มกระโดดบางครั้ง
-          sneak: rand > 0.65,      // สุ่มย่อตัว
-          sprinting: false
-        },
-        input_mode: 'touch',
-        play_mode: 'normal',
-        interaction_model: 'touch'
-      });
-    } catch (e) {
-      // ข้ามกรณีเซิร์ฟเวอร์ยังไม่พร้อมรับแพ็กเก็ต
-    }
-
-    // สุ่มเวลาทำแอคชันรอบถัดไป (สุ่มระหว่าง 15 วินาที ถึง 1.5 นาที เพื่อไม่ให้ระบบจับจังหวะได้)
-    const nextDelay = Math.floor(Math.random() * 75000) + 15000;
-    setTimeout(loop, nextDelay);
+function reconnect() {
+  if (afkInterval) clearInterval(afkInterval);
+  if (client) {
+    client.removeAllListeners();
+    client = null;
   }
-
-  loop();
+  setTimeout(createBot, 20000);
 }
 
-// 4. ระบบ Reconnect สุ่มเวลา
-function scheduleReconnect() {
-  if (reconnectTimeout) clearTimeout(reconnectTimeout);
-  const delay = Math.floor(Math.random() * 60000) + 30000; // สุ่มรอ 30-90 วินาที
-  console.log(`[!] จะลองเชื่อมต่อใหม่อีกครั้งในอีก ${Math.round(delay / 1000)} วินาที...`);
-  reconnectTimeout = setTimeout(createBot, delay);
-}
-
+// เริ่มการทำงาน
 createBot();
