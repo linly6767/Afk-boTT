@@ -1,18 +1,24 @@
-const mineflayer = require('mineflayer');
+const bedrock = require('bedrock-protocol');
 const express = require('express');
 const app = express();
 app.get('/', (req, res) => res.send('Bot Online!'));
 app.listen(process.env.PORT || 3000);
 
 function createBot() {
-  const bot = mineflayer.createBot({
+  const client = bedrock.createClient({
     host: process.env.SERVER_IP,
-    port: parseInt(process.env.SERVER_PORT) || 25565,
-    username: process.env.BOT_NAME || 'AFK_Bot_24H'
+    port: parseInt(process.env.SERVER_PORT) || 19132,
+    username: process.env.BOT_NAME || 'AFK_Bot_24H',
+    offline: true
   });
-  bot.on('spawn', () => console.log('Bot is in server!'));
-  bot.on('end', () => setTimeout(createBot, 15000));
-  bot.on('error', err => console.log('Error:', err));
+
+  client.on('join', () => console.log('บอท Bedrock เข้าเซิร์ฟสำเร็จ!'));
+  client.on('close', () => {
+    console.log('หลุดการเชื่อมต่อ กำลังลองใหม่ใน 15 วินาที...');
+    setTimeout(createBot, 15000);
+  });
+  client.on('error', err => console.log('Error:', err));
 }
+
 createBot();
 
